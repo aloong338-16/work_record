@@ -1,0 +1,16 @@
+# ===== 用户数据（含个人工作记录，切勿提交到仓库）=====
+work_data/
+*.json
+
+# ===== 打包产物 / 临时文件 =====
+.trae-html-share-packages/
+*_qa_check.mjs
+*.tmp
+*.log
+
+# ===== 编辑器 / 系统文件 =====
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+.DS_Store
