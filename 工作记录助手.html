@@ -636,14 +636,14 @@ async function restoreFileHandle(){
 async function bindNewFile(){
   try{
     const handle = await window.showSaveFilePicker({
-      suggestedName:'工记数据.json',
+      suggestedName:'工记用户数据.json',
       types:[{ description:'工记数据文件', accept:{ 'application/json':['.json'] } }]
     });
     await idbSet('fileHandle', handle);
     fileHandle = handle; fileConnected = true;
     await writeToFileNow();
     clearBanner();
-    toast('数据文件已绑定，此后修改会自动写入该文件', 'success');
+    toast('用户数据 JSON 文件已绑定，此后账号、工作记录和设置会自动写入该文件', 'success');
     updateDataStatus();
     if(view === 'settings') renderSettings();
   }catch(e){
@@ -667,7 +667,7 @@ async function bindExistingFile(){
     commit();
     await writeToFileNow();
     clearBanner();
-    toast('数据文件绑定成功', 'success');
+    toast('用户数据 JSON 绑定成功', 'success');
     updateDataStatus();
     if(view === 'settings') renderSettings();
   }catch(e){
@@ -677,7 +677,7 @@ async function bindExistingFile(){
 async function unbindFile(){
   await idbDel('fileHandle');
   fileHandle = null; fileConnected = false;
-  toast('已断开数据文件，数据仍保存在浏览器中', 'info');
+  toast('已断开 JSON 文件绑定；后续修改只保存在浏览器本地', 'info');
   updateDataStatus();
   if(view === 'settings') renderSettings();
 }
@@ -719,29 +719,103 @@ function exportBackup(){
   updateDataStatus();
   toast('备份已导出', 'success');
 }
+/* 导入 JSON 标准化：兼容旧备份/手动整理的账号大小写，并为缺少 ID 的记录补稳定 ID。 */
+function stableImportedRecordId(owner, index, record){
+  const source = String(owner) + '|' + String(index) + '|' + JSON.stringify(record);
+  let h = 2166136261;
+  for(let i = 0; i < source.length; i++) h = Math.imul(h ^ source.charCodeAt(i), 16777619);
+  return 'import-' + (h >>> 0).toString(16);
+}
+function normalizeImportData(input){
+  let data = input;
+  if(data && typeof data === 'object' && !Array.isArray(data) && !data.accounts){
+    for(const k of ['blob','data','backup']){
+      if(data[k] && typeof data[k] === 'object' && data[k].accounts){ data = data[k]; break; }
+    }
+  }
+  if(!data || typeof data !== 'object' || Array.isArray(data) || !data.accounts || typeof data.accounts !== 'object' || Array.isArray(data.accounts)){
+    throw new Error('文件格式不正确：未找到有效的 accounts 账号数据');
+  }
+  if(data.records != null && (typeof data.records !== 'object' || Array.isArray(data.records))){
+    throw new Error('文件格式不正确：records 必须是对象');
+  }
+  const copy = JSON.parse(JSON.stringify(data));
+  const accounts = {};
+  const accountKeyMap = {};
+  Object.entries(copy.accounts || {}).forEach(([rawKey, account]) => {
+    const key = String(rawKey).trim().toLowerCase();
+    if(!key) return;
+    accountKeyMap[rawKey] = key;
+    if(!accounts[key]) accounts[key] = account;
+  });
+  const records = {};
+  Object.entries(copy.records || {}).forEach(([rawKey, list]) => {
+    const key = accountKeyMap[rawKey] || String(rawKey).trim().toLowerCase();
+    if(!key) return;
+    const rows = Array.isArray(list) ? list : (list && typeof list === 'object' ? Object.values(list) : []);
+    if(!records[key]) records[key] = [];
+    const startIndex = records[key].length;
+    rows.forEach((row, index) => {
+      const rec = row && typeof row === 'object' && !Array.isArray(row) ? Object.assign({}, row) : { content:String(row ?? '') };
+      if(rec.id == null || String(rec.id).trim() === '') rec.id = stableImportedRecordId(key, startIndex + index, rec);
+      else rec.id = String(rec.id);
+      if(rec.updatedAt == null && rec.createdAt != null) rec.updatedAt = rec.createdAt;
+      records[key].push(rec);
+    });
+  });
+  const settings = Object.assign({}, copy.settings || {});
+  const rawUserSettings = settings.users && typeof settings.users === 'object' ? settings.users : {};
+  settings.users = {};
+  Object.entries(rawUserSettings).forEach(([rawKey, value]) => {
+    const key = String(rawKey).trim().toLowerCase();
+    if(key) settings.users[key] = Object.assign(settings.users[key] || {}, value || {});
+  });
+  if(settings.session && settings.session.user) settings.session.user = String(settings.session.user).toLowerCase();
+  if(settings.lastUser) settings.lastUser = String(settings.lastUser).toLowerCase();
+  return migrate(Object.assign({}, copy, { accounts, records, settings }));
+}
 function mergeBlob(imp){
-  Object.entries(imp.accounts || {}).forEach(([k, v]) => { if(!blob.accounts[k]) blob.accounts[k] = v; });
+  let addedAccounts = 0, addedRecords = 0, updatedRecords = 0;
+  Object.entries(imp.accounts || {}).forEach(([k, v]) => {
+    if(!blob.accounts[k]){ blob.accounts[k] = v; addedAccounts++; }
+  });
   Object.entries(imp.records || {}).forEach(([k, list]) => {
     const cur = blob.records[k] || (blob.records[k] = []);
-    const map = new Map(cur.map(e => [e.id, e]));
-    (list || []).forEach(e => {
+    const map = new Map();
+    cur.forEach((e, i) => {
+      const rec = Object.assign({}, e);
+      if(rec.id == null || String(rec.id).trim() === '') rec.id = stableImportedRecordId(k, i, rec);
+      rec.id = String(rec.id);
+      map.set(rec.id, rec);
+    });
+    (Array.isArray(list) ? list : []).forEach((row, i) => {
+      const e = Object.assign({}, row);
+      if(e.id == null || String(e.id).trim() === '') e.id = stableImportedRecordId(k, cur.length + i, e);
+      e.id = String(e.id);
       const ex = map.get(e.id);
-      if(!ex || (e.updatedAt || 0) > (ex.updatedAt || 0)) map.set(e.id, e);
+      if(!ex){ map.set(e.id, e); addedRecords++; }
+      else if((e.updatedAt || e.createdAt || 0) > (ex.updatedAt || ex.createdAt || 0)){
+        map.set(e.id, e); updatedRecords++;
+      }
     });
     blob.records[k] = Array.from(map.values());
   });
   Object.entries((imp.settings && imp.settings.users) || {}).forEach(([k, v]) => {
     blob.settings.users[k] = Object.assign(blob.settings.users[k] || {}, v);
   });
+  if(imp.settings && imp.settings.theme && !blob.settings.theme) blob.settings.theme = imp.settings.theme;
   commit();
+  return { addedAccounts, addedRecords, updatedRecords };
 }
 function importChoiceModal(imp){
   const n = Object.keys(imp.accounts || {}).length;
+  const totalRecords = Object.values(imp.records || {}).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0);
   openModal(`
     <div class="modal-head"><h3>导入数据</h3></div>
     <div class="modal-body">
-      <p class="modal-text">备份文件中包含 ${n} 个账号。请选择导入方式：</p>
-      <p class="modal-text"><strong>合并导入</strong>：保留现有数据，按记录 ID 去重合并（推荐）。<br><strong>替换导入</strong>：清空当前全部数据，完全使用备份文件内容。</p>
+      <p class="modal-text">检测到 ${n} 个账号、${totalRecords} 条工作记录。请选择导入方式：</p>
+      <p class="modal-text"><strong>合并导入</strong>：保留本机数据，按记录 ID 去重合并；旧记录缺少 ID 时会自动补齐（推荐）。<br><strong>替换导入</strong>：清空本机全部数据，完全使用备份文件内容。</p>
+      <p class="hint">记录按账号归属导入。若导入后当前页面没有显示新记录，请退出并登录备份文件中对应的账号。</p>
     </div>
     <div class="modal-foot">
       <button class="btn ghost" id="imp-cancel">取消</button>
@@ -749,18 +823,36 @@ function importChoiceModal(imp){
       <button class="btn danger" id="imp-replace">替换导入</button>
     </div>`);
   $('#imp-cancel').onclick = closeModal;
-  $('#imp-merge').onclick = () => { mergeBlob(imp); closeModal(); toast('合并导入完成', 'success'); };
+  $('#imp-merge').onclick = () => {
+    try{
+      const result = mergeBlob(imp);
+      closeModal();
+      toast(`导入完成：新增 ${result.addedAccounts} 个账号、${result.addedRecords} 条记录，更新 ${result.updatedRecords} 条`, 'success');
+    }catch(err){ toast('合并导入失败：' + (err.message || err), 'error'); }
+  };
   $('#imp-replace').onclick = () => {
     confirmModal({
       title:'确认替换全部数据？',
       body:'当前所有账号与记录将被备份文件覆盖，且无法恢复。',
       danger:true, okText:'替换',
       onOk:() => {
-        blob = migrate(imp); blob.savedAt = Date.now();
-        saveLS(); scheduleFileWrite();
-        if(!blob.accounts[currentUser]){ currentUser = null; showAuth(); }
-        else refreshApp();
-        toast('已替换为备份数据', 'success');
+        try{
+          const activeUser = currentUser;
+          const previousSession = blob.settings && blob.settings.session;
+          blob = migrate(JSON.parse(JSON.stringify(imp)));
+          const targetUser = (activeUser && blob.accounts[activeUser]) ? activeUser :
+            (blob.settings.session && blob.accounts[blob.settings.session.user] ? blob.settings.session.user :
+            (blob.settings.lastUser && blob.accounts[blob.settings.lastUser] ? blob.settings.lastUser : null));
+          currentUser = targetUser;
+          if(targetUser){
+            blob.settings.lastUser = targetUser;
+            blob.settings.session = previousSession && previousSession.user === targetUser ? previousSession : null;
+          }else blob.settings.session = null;
+          applyTheme();
+          commit();
+          if(currentUser) enterApp(); else showAuth();
+          toast('已替换为备份数据', 'success');
+        }catch(err){ toast('替换导入失败：' + (err.message || err), 'error'); }
       }
     });
   };
@@ -1070,9 +1162,16 @@ function buildDaily(){
     </div>
     <div id="daily-list"></div>`;
   wireSeg('f-status');
+  restoreDailyDraft();
   $('#btn-add').onclick = addEntry;
   $('#f-content').addEventListener('keydown', e => { if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)) addEntry(); });
-  $('#f-content').addEventListener('input', () => autoGrow($('#f-content')));
+  $('#f-content').addEventListener('input', () => { autoGrow($('#f-content')); saveDailyDraft(); });
+  ['f-date','f-project','f-category','f-hours'].forEach(id => {
+    const el = $('#' + id);
+    if(el) el.addEventListener('input', saveDailyDraft);
+    if(el) el.addEventListener('change', saveDailyDraft);
+  });
+  $('#f-status').addEventListener('click', () => setTimeout(saveDailyDraft, 0));
   autoGrow($('#f-content'));
   $('#range-chips').addEventListener('click', e => {
     const b = e.target.closest('button[data-range]');
@@ -1136,6 +1235,50 @@ function renderDailyList(){
     </div>`;
   }).join('');
 }
+
+/* 工作记录草稿：切换页面或重新渲染时保留尚未保存的输入 */
+function dailyDraftKey(){
+  return 'gongji_daily_draft_' + (currentUser || 'guest');
+}
+function saveDailyDraft(){
+  const content = $('#f-content');
+  if(!content || !currentUser) return;
+  const draft = {
+    date: $('#f-date')?.value || todayStr(),
+    project: $('#f-project')?.value || '',
+    category: $('#f-category')?.value || CATEGORIES[0],
+    hours: $('#f-hours')?.value || '',
+    status: segVal('f-status') || '已完成',
+    content: content.value || ''
+  };
+  try{
+    if(Object.values(draft).some(v => String(v).trim() !== '')){
+      localStorage.setItem(dailyDraftKey(), JSON.stringify(draft));
+    }else{
+      localStorage.removeItem(dailyDraftKey());
+    }
+  }catch(e){}
+}
+function restoreDailyDraft(){
+  try{
+    const raw = localStorage.getItem(dailyDraftKey());
+    if(!raw) return;
+    const d = JSON.parse(raw);
+    if($('#f-date')) $('#f-date').value = d.date || todayStr();
+    if($('#f-project')) $('#f-project').value = d.project || '';
+    if($('#f-category')) $('#f-category').value = d.category || CATEGORIES[0];
+    if($('#f-hours')) $('#f-hours').value = d.hours || '';
+    if($('#f-content')) $('#f-content').value = d.content || '';
+    const status = $('#f-status');
+    if(status && d.status){
+      $$('button', status).forEach(b => b.classList.toggle('active', b.dataset.v === d.status));
+    }
+  }catch(e){}
+}
+function clearDailyDraft(){
+  try{ localStorage.removeItem(dailyDraftKey()); }catch(e){}
+}
+
 function addEntry(){
   const content = $('#f-content').value.trim();
   if(!content){ toast('请先填写今天做了什么', 'error'); $('#f-content').focus(); return; }
@@ -1150,6 +1293,7 @@ function addEntry(){
     createdAt:Date.now(), updatedAt:Date.now()
   };
   myRecords().push(entry);
+  clearDailyDraft();
   commit();
   $('#f-content').value = '';
   autoGrow($('#f-content'));
@@ -1545,15 +1689,15 @@ function renderSettings(){
     </section>
 
     <section class="card">
-      <h2 class="card-title">数据存储</h2>
+      <h2 class="card-title">用户数据 JSON 文件</h2>
       <div class="data-status" id="ds-status">${dsStatusHtml()}</div>
       ${fsSupported ? `
       <div class="btn-row">
-        <button class="btn ghost sm" id="btn-file-new">${icon('file', 14)}新建数据文件</button>
-        <button class="btn ghost sm" id="btn-file-open">${icon('link', 14)}绑定已有文件</button>
+        <button class="btn ghost sm" id="btn-file-new">${icon('file', 14)}创建用户数据 JSON</button>
+        <button class="btn ghost sm" id="btn-file-open">${icon('link', 14)}绑定已有 JSON</button>
         ${fileHandle ? '<button class="btn ghost sm" id="btn-file-unbind">断开绑定</button>' : ''}
       </div>
-      <p class="hint">绑定后，每次修改会自动写入所选 .json 文件，即使清理浏览器数据记录也不丢失。换电脑时：复制该文件 → 新电脑打开软件 → 「绑定已有文件」选择它即可恢复全部数据。</p>` : ''}
+      <p class="hint"><strong>推荐：</strong>点击“创建用户数据 JSON”，在文件保存窗口中手动选择与本 HTML 网页相同的文件夹，并保存为 <code>工记用户数据.json</code>。绑定后，注册账号、密码校验信息、工作记录和设置都会自动写入该 JSON 文件。浏览器安全限制不允许网页自行获取 HTML 所在目录，因此需要你在保存窗口中选择目录一次。换电脑时请同时复制 HTML 和 JSON 文件，再通过“绑定已有 JSON”选择数据文件。</p>` : ''}
       <div class="divider"></div>
       <div class="btn-row">
         <button class="btn ghost sm" id="btn-export">${icon('download', 14)}导出备份</button>
@@ -1758,11 +1902,11 @@ function welcomeModal(){
     <div class="modal-head"><h3>欢迎使用工记</h3></div>
     <div class="modal-body">
       <p class="modal-text">两个小贴士，帮你用好它：</p>
-      <p class="modal-text"><strong>1. 数据只存在你的电脑上</strong> —— 浏览器本地 + 可选的数据文件，不上传任何服务器。<br><br><strong>2. 建议现在就绑定数据文件</strong>（约 10 秒）—— 这样即使清理浏览器数据，记录也安然无恙。</p>
+      <p class="modal-text"><strong>1. 数据只保存在你的电脑上</strong>，不会上传到服务器。<br><br><strong>2. 建议现在创建用户数据 JSON</strong>：在保存窗口里选择与本 HTML 网页相同的文件夹，文件名使用“工记用户数据.json”。绑定后，账号和工作记录会自动保存到该 JSON 文件，方便备份和迁移。</p>
     </div>
     <div class="modal-foot">
       <button class="btn ghost" id="wc-later">稍后再说</button>
-      <button class="btn primary" id="wc-bind">${fsSupported ? '去绑定数据文件' : '先导出一份备份'}</button>
+      <button class="btn primary" id="wc-bind">${fsSupported ? '创建用户数据 JSON' : '先导出一份备份'}</button>
     </div>`, false);
   $('#wc-later').onclick = () => { closeModal(); backupBannerDismissed = true; };
   $('#wc-bind').onclick = () => { closeModal(); backupBannerDismissed = true; if(fsSupported) bindNewFile(); else exportBackup(); };
@@ -1859,14 +2003,22 @@ function wireShell(){
   });
   document.addEventListener('keydown', e => { if(e.key === 'Escape') closeModal(); });
   $('#import-file').addEventListener('change', async e => {
-    const f = e.target.files[0];
+    const f = e.target.files && e.target.files[0];
     e.target.value = '';
     if(!f) return;
     try{
-      const data = JSON.parse(await f.text());
-      if(!data || typeof data !== 'object' || !data.accounts) throw new Error('文件格式不正确');
-      importChoiceModal(migrate(data));
-    }catch(err){ toast('导入失败：' + err.message, 'error'); }
+      const textContent = await f.text();
+      if(!textContent.trim()) throw new Error('文件为空');
+      const data = JSON.parse(textContent);
+      const normalized = normalizeImportData(data);
+      const accountCount = Object.keys(normalized.accounts || {}).length;
+      const recordCount = Object.values(normalized.records || {}).reduce((sum, rows) => sum + (Array.isArray(rows) ? rows.length : 0), 0);
+      if(accountCount === 0 && recordCount === 0) throw new Error('文件中没有可导入的账号或工作记录');
+      importChoiceModal(normalized);
+    }catch(err){
+      console.error('[import JSON]', err);
+      toast('导入失败：' + (err.message || err), 'error');
+    }
   });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if(currentTheme() === 'auto') applyTheme(); });
 }
