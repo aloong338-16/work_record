@@ -134,6 +134,16 @@ html.dark .auth-bg::after{opacity:.28}
 .auth-tabs button{flex:1}
 .auth-form{display:flex; flex-direction:column; gap:14px}
 .auth-hint{text-align:center; font-size:12px; color:var(--ink-3); margin-top:2px}
+.auth-transfer{border-top:1px solid var(--border); margin-top:18px; padding-top:14px}
+.auth-transfer .btn-row{justify-content:center}
+.category-custom{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px}
+.category-custom .field{flex:1; min-width:160px}
+.category-custom .check{align-self:flex-end; padding-bottom:9px}
+.category-list{display:flex; flex-wrap:wrap; gap:8px}
+.category-list .chip{max-width:100%; overflow-wrap:anywhere}
+.category-list .icon-btn{width:22px; height:22px}
+.storage-line{display:flex; justify-content:flex-end; margin-bottom:10px}
+.storage-line button{font-size:12px; color:var(--ink-3); text-align:right; overflow-wrap:anywhere}
 .shake{animation:shake .4s}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
 
@@ -294,7 +304,16 @@ html.dark .chip.project{color:hsl(var(--ph) 85% 70%)}
 .ds-dot.amber{background:var(--doing)}
 .ds-dot.red{background:var(--danger)}
 .ai-fields{display:grid; grid-template-columns:1fr; gap:12px; margin-top:14px}
-.ai-fields .row2{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+.ai-fields .row2{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px}
+.ai-fields .field{min-width:0}
+.ai-model-row{display:flex; align-items:center; gap:8px}
+.ai-model-row .input{flex:1; min-width:0}
+.ai-model-row .btn{flex-shrink:0}
+.ai-fields .field>label{font-size:12.5px; color:var(--ink-2); font-weight:500}
+.ai-fields [role="status"]{overflow-wrap:anywhere}
+.ai-fields .model-list[hidden]{display:none}
+.ai-service{display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:12px}
+.ai-service .hint{margin:0; flex:1; min-width:150px; overflow-wrap:anywhere}
 .danger-zone{border:1px dashed var(--border-strong); border-radius:var(--radius-sm); padding:14px 16px; margin-top:16px; display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap}
 .danger-zone strong{font-size:13.5px; color:var(--danger)}
 .about-list{display:flex; flex-direction:column; gap:10px; font-size:13px; color:var(--ink-2); line-height:1.7}
@@ -364,6 +383,7 @@ html.dark .toast{background:var(--surface-3); color:var(--ink); border:1px solid
 }
 @media (max-width:560px){
   .form-grid{grid-template-columns:1fr}
+  .ai-fields .row2{grid-template-columns:1fr}
   .filter-fields{flex-direction:column}
   .filter-fields select{max-width:none}
 }
@@ -399,6 +419,13 @@ html.dark .toast{background:var(--surface-3); color:var(--ink); border:1px solid
       <button class="btn primary block" type="submit">创建账号</button>
       <p class="auth-hint">每个账号的数据相互隔离，可多人共用本软件</p>
     </form>
+    <div class="auth-transfer">
+      <div class="btn-row">
+        <button class="btn ghost sm" id="auth-import" type="button">导入个人 JSON</button>
+        <button class="btn ghost sm" id="auth-open" type="button" hidden>打开并绑定 JSON</button>
+      </div>
+      <p class="hint" id="auth-data-status">已有数据文件可直接导入，再使用原账号密码登录。</p>
+    </div>
   </div>
 </div>
 
@@ -424,6 +451,7 @@ html.dark .toast{background:var(--surface-3); color:var(--ink); border:1px solid
     </div>
   </aside>
   <main class="main">
+    <div class="storage-line"><button id="storage-location" title="查看数据保存位置"></button></div>
     <div id="banner-root"></div>
     <div id="view-root"></div>
   </main>
@@ -500,8 +528,8 @@ function icon(name, size=15){
 /* ========== 全局状态 ========== */
 const LS_KEY = 'gongji_blob_v1';
 const THEME_KEY = 'gongji_theme';
-const CATEGORIES = ['开发','调试','测试','会议','文档','学习','其他'];
-const APP_VERSION = '1.0.0';
+const CATEGORIES = ['开发','BUG 修复','需求分析','代码评审','调试','测试','发布部署','运维支持','性能优化','会议','文档','学习','其他'];
+const APP_VERSION = '1.1.0';
 const fsSupported = typeof window.showSaveFilePicker === 'function';
 
 let blob = null;
@@ -512,6 +540,7 @@ let weekOffset = 0, weekMode = 'week', customRange = null;
 let monthY = null, monthM = null, monthMode = 'detail';
 let weekAI = null, monthAI = null;
 let fileHandle = null, fileConnected = false;
+let fileOwner = null, fileTask = Promise.resolve(), lastFileSyncAt = 0, fileLegacy = false;
 let backupBannerDismissed = false;
 let fwTimer = null;
 
@@ -528,6 +557,11 @@ function migrate(b){
   b.records = b.records || {};
   b.settings = b.settings || {};
   b.settings.users = b.settings.users || {};
+  Object.values(b.settings.users).forEach(u => {
+    if(!u || typeof u !== 'object') return;
+    if(!Array.isArray(u.categories)) u.categories = [];
+    if(!u.deletedRecords || typeof u.deletedRecords !== 'object') u.deletedRecords = {};
+  });
   if(b.settings.theme == null) b.settings.theme = localStorage.getItem(THEME_KEY) || 'auto';
   if(b.settings.lastExportAt == null) b.settings.lastExportAt = 0;
   b.savedAt = b.savedAt || 0;
@@ -544,6 +578,73 @@ function loadLS(){
 function saveLS(){
   try{ localStorage.setItem(LS_KEY, JSON.stringify(blob)); }
   catch(e){ toast('浏览器本地保存失败：' + e.message, 'error'); }
+}
+function userSettings(user = currentUser){
+  const users = blob.settings.users;
+  if(!users[user] || typeof users[user] !== 'object') users[user] = {};
+  const settings = users[user];
+  if(!settings.ai) settings.ai = { enabled:false, baseUrl:'', apiKey:'', model:'' };
+  if(!Array.isArray(settings.categories)) settings.categories = [];
+  if(!settings.deletedRecords || typeof settings.deletedRecords !== 'object') settings.deletedRecords = {};
+  return settings;
+}
+function touchSettings(){
+  userSettings().updatedAt = Date.now();
+}
+function personalBlob(user = currentUser){
+  if(!user || !blob.accounts[user]) throw new Error('请先登录后再导出个人数据');
+  const settings = JSON.parse(JSON.stringify(userSettings(user)));
+  return {
+    version:1, owner:user, createdAt:blob.accounts[user].createdAt || blob.createdAt,
+    savedAt:settings.savedAt || blob.savedAt,
+    accounts:{ [user]:JSON.parse(JSON.stringify(blob.accounts[user])) },
+    records:{ [user]:JSON.parse(JSON.stringify(blob.records[user] || [])) },
+    settings:{ theme:settings.theme || blob.settings.theme, lastUser:user, session:null,
+      users:{ [user]:settings }, lastExportAt:settings.lastExportAt || 0 }
+  };
+}
+
+/* 同步按记录更新时间合并，并保留删除标记；个人偏好与草稿各自比较时间。 */
+function mergeAccountData(data, user, preferIncoming = false){
+  const incoming = data.accounts[user] || blob.accounts[user];
+  if(!incoming) return { addedAccounts:0, addedRecords:0, updatedRecords:0 };
+  const result = { addedAccounts:0, addedRecords:0, updatedRecords:0 };
+  const existing = blob.accounts[user];
+  if(!existing){ blob.accounts[user] = incoming; result.addedAccounts++; }
+  else if((incoming.updatedAt || incoming.createdAt || 0) > (existing.updatedAt || existing.createdAt || 0)){
+    blob.accounts[user] = incoming;
+  }
+  const local = userSettings(user), remote = Object.assign({ theme:data.settings.theme }, data.settings.users[user] || {});
+  const hasRemoteSettings = Object.prototype.hasOwnProperty.call(data.settings.users, user);
+  const takeRemote = (preferIncoming && hasRemoteSettings) || !existing || (remote.updatedAt || 0) > (local.updatedAt || 0);
+  const merged = Object.assign({}, local, takeRemote ? remote : {});
+  if(preferIncoming && hasRemoteSettings) merged.updatedAt = Date.now();
+  merged.savedAt = Math.max(local.savedAt || 0, remote.savedAt || data.savedAt || 0);
+  merged.deletedRecords = Object.assign({}, local.deletedRecords);
+  Object.entries(remote.deletedRecords || {}).forEach(([id, time]) => {
+    merged.deletedRecords[id] = Math.max(merged.deletedRecords[id] || 0, time);
+  });
+  if((remote.draftUpdatedAt || 0) > (local.draftUpdatedAt || 0)){
+    merged.draft = remote.draft;
+    merged.draftUpdatedAt = remote.draftUpdatedAt;
+  }else{
+    merged.draft = local.draft;
+    merged.draftUpdatedAt = local.draftUpdatedAt || 0;
+  }
+  merged.lastExportAt = Math.max(local.lastExportAt || 0, remote.lastExportAt || 0);
+  blob.settings.users[user] = merged;
+  const records = new Map((blob.records[user] || []).map(record => [record.id, record]));
+  (data.records[user] || []).forEach(record => {
+    const previous = records.get(record.id);
+    if(!previous){ records.set(record.id, record); result.addedRecords++; }
+    else if((record.updatedAt || record.createdAt || 0) > (previous.updatedAt || previous.createdAt || 0)){
+      records.set(record.id, record); result.updatedRecords++;
+    }
+  });
+  blob.records[user] = Array.from(records.values()).filter(record =>
+    !merged.deletedRecords[record.id] || merged.deletedRecords[record.id] < (record.updatedAt || record.createdAt || 0));
+  blob.savedAt = Math.max(blob.savedAt || 0, data.savedAt || 0);
+  return result;
 }
 
 /* IndexedDB：仅用于记住数据文件句柄 */
@@ -590,62 +691,107 @@ async function idbDel(key){
 
 /* 数据文件（File System Access API） */
 async function readFromFile(handle){
-  try{
-    const f = await handle.getFile();
-    const txt = await f.text();
-    if(!txt.trim()) return null;
-    const b = JSON.parse(txt);
-    return (b && b.accounts) ? b : null;
-  }catch(e){ return null; }
+  const f = await handle.getFile();
+  const txt = await f.text();
+  if(!txt.trim()) return null;
+  return normalizeImportData(JSON.parse(txt));
 }
 async function writeToFileNow(){
-  if(!fileHandle || !fileConnected) return;
-  try{
-    const w = await fileHandle.createWritable();
-    await w.write(JSON.stringify(blob, null, 2));
-    await w.close();
-  }catch(e){
-    fileConnected = false;
-    toast('写入数据文件失败：' + (e.message || e), 'error');
-    showReconnectBanner();
-  }
+  const handle = fileHandle, owner = fileOwner;
+  if(!handle || !fileConnected || !owner || !blob.accounts[owner]) return false;
+  const action = async () => {
+    if(handle !== fileHandle || owner !== fileOwner || !fileConnected) return false;
+    try{
+      const existing = await readFromFile(handle);
+      const existingText = existing && JSON.stringify(existing);
+      if(existing && !existing.accounts[owner]) throw new Error('所选文件属于其他账号，已停止写入');
+      const before = JSON.stringify(personalBlob(owner));
+      const draftBefore = userSettings(owner).draftUpdatedAt;
+      const categoriesBefore = JSON.stringify(userSettings(owner).categories);
+      if(existing) mergeAccountData(existing, owner);
+      let data = personalBlob(owner);
+      fileLegacy = !!existing && Object.keys(existing.accounts).length > 1;
+      /* 旧版多账号文件保留其他账号，避免迁移时截断原有数据。 */
+      if(existing && Object.keys(existing.accounts).length > 1){
+        existing.accounts[owner] = data.accounts[owner];
+        existing.records[owner] = data.records[owner];
+        existing.settings.users[owner] = data.settings.users[owner];
+        existing.savedAt = Math.max(existing.savedAt || 0, data.savedAt || 0);
+        existing.settings.session = null;
+        data = existing;
+      }
+      saveLS();
+      if(!existing || existingText !== JSON.stringify(data)){
+        const writable = await handle.createWritable();
+        await writable.write(JSON.stringify(data, null, 2));
+        await writable.close();
+      }
+      lastFileSyncAt = Date.now();
+      if(currentUser === owner && before !== JSON.stringify(personalBlob(owner))){
+        applyTheme();
+        if(view === 'daily' && (draftBefore !== userSettings(owner).draftUpdatedAt || categoriesBefore !== JSON.stringify(userSettings(owner).categories))){
+          buildDaily();
+        }else refreshApp();
+      }
+      updateDataStatus();
+      return true;
+    }catch(e){
+      fileConnected = false;
+      toast('同步数据文件失败：' + (e.message || e), 'error');
+      updateDataStatus();
+      showReconnectBanner();
+      return false;
+    }
+  };
+  const task = fileTask.then(action, action);
+  fileTask = task.catch(() => {});
+  return task;
 }
 function scheduleFileWrite(){
-  if(!fileHandle || !fileConnected) return;
+  if(!fileHandle || !fileConnected || fileOwner !== currentUser) return;
   clearTimeout(fwTimer);
   fwTimer = setTimeout(writeToFileNow, 800);
 }
 async function syncFromFile(){
-  const fb = await readFromFile(fileHandle);
-  if(!fb){ await writeToFileNow(); return; }
-  const ls = loadLS();
-  /* 文件与浏览器缓存各有一份时，取更新时间较新的一份，避免丢数据 */
-  const pick = !ls ? fb : ((fb.savedAt || 0) >= (ls.savedAt || 0) ? fb : ls);
-  blob = migrate(pick);
+  return writeToFileNow();
 }
-async function restoreFileHandle(){
-  if(!fsSupported) return;
+async function restoreFileHandle(user = currentUser){
+  if(!fsSupported || !user) return;
   try{
-    const h = await idbGet('fileHandle');
+    let h = await idbGet('fileHandle:' + user);
+    if(h === undefined){
+      const legacy = await idbGet('fileHandle');
+      if(legacy && await legacy.queryPermission({ mode:'readwrite' }) === 'granted'){
+        const data = await readFromFile(legacy);
+        if(data && data.accounts[user]){ h = legacy; await idbSet('fileHandle:' + user, h); }
+      }
+    }
     if(!h) return;
-    fileHandle = h;
+    fileHandle = h; fileOwner = user;
     const perm = await h.queryPermission({ mode:'readwrite' });
     if(perm === 'granted'){ fileConnected = true; await syncFromFile(); }
-  }catch(e){ fileHandle = null; }
+  }catch(e){
+    fileConnected = false;
+    if(fileHandle) toast('数据文件暂不可用：' + (e.message || e), 'error');
+  }
 }
 async function bindNewFile(){
+  if(!currentUser) return;
   try{
     const handle = await window.showSaveFilePicker({
-      suggestedName:'工记用户数据.json',
+      suggestedName:'工记_' + currentAccount().name + '.json',
       types:[{ description:'工记数据文件', accept:{ 'application/json':['.json'] } }]
     });
-    await idbSet('fileHandle', handle);
-    fileHandle = handle; fileConnected = true;
-    await writeToFileNow();
-    clearBanner();
-    toast('用户数据 JSON 文件已绑定，此后账号、工作记录和设置会自动写入该文件', 'success');
-    updateDataStatus();
+    if(fileConnected) await writeToFileNow();
+    clearTimeout(fwTimer);
+    await idbSet('fileHandle:' + currentUser, handle);
+    fileHandle = handle; fileOwner = currentUser; fileConnected = true;
+    const written = await writeToFileNow();
     if(view === 'settings') renderSettings();
+    if(!written) return;
+    clearBanner();
+    toast('个人 JSON 已绑定，账号、记录、分类、配置和草稿都会保存到这个文件', 'success');
+    updateDataStatus();
   }catch(e){
     if(e && e.name !== 'AbortError') toast('绑定失败：' + (e.message || e), 'error');
   }
@@ -655,28 +801,45 @@ async function bindExistingFile(){
     const [handle] = await window.showOpenFilePicker({
       types:[{ description:'工记数据文件', accept:{ 'application/json':['.json'] } }]
     });
-    const fb = await readFromFile(handle);
-    if(fb){
-      const ls = loadLS();
-      const fileNewer = !ls || (fb.savedAt || 0) >= (ls.savedAt || 0);
-      if(fileNewer){ blob = migrate(fb); toast('已载入数据文件中的数据（文件较新）', 'success'); }
-      else toast('本机数据较新，将覆盖写入所选文件', 'info');
+    if(await handle.queryPermission({ mode:'readwrite' }) !== 'granted' &&
+      await handle.requestPermission({ mode:'readwrite' }) !== 'granted'){
+      throw new Error('未获得文件读写权限，可改用导入个人 JSON 恢复数据');
     }
-    await idbSet('fileHandle', handle);
-    fileHandle = handle; fileConnected = true;
-    commit();
-    await writeToFileNow();
+    const data = await readFromFile(handle);
+    if(!data || !Object.keys(data.accounts).length) throw new Error('文件中没有可恢复的账号，请选择已有的数据 JSON');
+    if(currentUser && !data.accounts[currentUser]) throw new Error('文件中没有当前账号，请退出登录后从登录页导入');
+    if(!currentUser){
+      for(const user of Object.keys(data.accounts)){
+        mergeAccountData(data, user);
+        await idbSet('fileHandle:' + user, handle);
+      }
+      blob.settings.lastUser = data.owner || data.settings.lastUser || Object.keys(data.accounts)[0];
+      blob.settings.session = null;
+      saveLS(); showAuth();
+      toast('账号和数据已恢复，请使用原账号密码登录', 'success');
+      return;
+    }
+    if(fileConnected) await writeToFileNow();
+    clearTimeout(fwTimer);
+    mergeAccountData(data, currentUser);
+    await idbSet('fileHandle:' + currentUser, handle);
+    fileHandle = handle; fileOwner = currentUser; fileConnected = true;
+    saveLS(); applyTheme(); refreshApp();
+    const written = await writeToFileNow();
+    if(view === 'settings') renderSettings();
+    if(!written) return;
     clearBanner();
     toast('用户数据 JSON 绑定成功', 'success');
     updateDataStatus();
-    if(view === 'settings') renderSettings();
   }catch(e){
     if(e && e.name !== 'AbortError') toast('绑定失败：' + (e.message || e), 'error');
   }
 }
 async function unbindFile(){
-  await idbDel('fileHandle');
-  fileHandle = null; fileConnected = false;
+  if(fileOwner) await idbSet('fileHandle:' + fileOwner, null);
+  clearTimeout(fwTimer);
+  await fileTask;
+  fileHandle = null; fileOwner = null; fileConnected = false; fileLegacy = false;
   toast('已断开 JSON 文件绑定；后续修改只保存在浏览器本地', 'info');
   updateDataStatus();
   if(view === 'settings') renderSettings();
@@ -687,35 +850,45 @@ async function reconnectFile(){
     const p = await fileHandle.requestPermission({ mode:'readwrite' });
     if(p === 'granted'){
       fileConnected = true;
-      await syncFromFile();
+      if(!await syncFromFile()) return;
       clearBanner();
       toast('数据文件已重新连接', 'success');
       updateDataStatus();
       if(view !== 'settings') renderView();
-    }else toast('未获得文件读写权限', 'error');
+    }else{
+      fileConnected = false;
+      updateDataStatus();
+      toast('未获得文件读写权限', 'error');
+    }
   }catch(e){ toast('重新连接失败：' + (e.message || e), 'error'); }
 }
 
 /* 提交：内存 → 浏览器 → 数据文件 */
-function commit(){
+function persistUserState(){
   blob.savedAt = Date.now();
+  if(currentUser) userSettings().savedAt = blob.savedAt;
   saveLS();
   scheduleFileWrite();
+}
+function commit(){
+  persistUserState();
   refreshApp();
 }
 
 /* ========== 导入 / 导出 ========== */
 function exportBackup(){
-  const data = JSON.stringify(blob, null, 2);
+  if(!currentUser) return;
+  userSettings().lastExportAt = Date.now();
+  blob.settings.lastExportAt = userSettings().lastExportAt;
+  persistUserState();
+  const data = JSON.stringify(personalBlob(), null, 2);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([data], { type:'application/json' }));
-  a.download = '工记备份_' + todayStr().replace(/-/g,'') + '.json';
+  a.download = '工记_' + currentAccount().name + '_' + todayStr().replace(/-/g,'') + '.json';
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  blob.settings.lastExportAt = Date.now();
-  saveLS();
   updateDataStatus();
   toast('备份已导出', 'success');
 }
@@ -770,42 +943,19 @@ function normalizeImportData(input){
     const key = String(rawKey).trim().toLowerCase();
     if(key) settings.users[key] = Object.assign(settings.users[key] || {}, value || {});
   });
-  if(settings.session && settings.session.user) settings.session.user = String(settings.session.user).toLowerCase();
-  if(settings.lastUser) settings.lastUser = String(settings.lastUser).toLowerCase();
+  if(settings.session && settings.session.user) settings.session.user = String(settings.session.user).trim().toLowerCase();
+  if(settings.lastUser) settings.lastUser = String(settings.lastUser).trim().toLowerCase();
+  if(copy.owner) copy.owner = String(copy.owner).trim().toLowerCase();
   return migrate(Object.assign({}, copy, { accounts, records, settings }));
 }
 function mergeBlob(imp){
-  let addedAccounts = 0, addedRecords = 0, updatedRecords = 0;
-  Object.entries(imp.accounts || {}).forEach(([k, v]) => {
-    if(!blob.accounts[k]){ blob.accounts[k] = v; addedAccounts++; }
+  const result = { addedAccounts:0, addedRecords:0, updatedRecords:0 };
+  new Set([...Object.keys(imp.accounts || {}), ...Object.keys(imp.records || {})]).forEach(user => {
+    const counts = mergeAccountData(imp, user, true);
+    Object.keys(result).forEach(key => { result[key] += counts[key]; });
   });
-  Object.entries(imp.records || {}).forEach(([k, list]) => {
-    const cur = blob.records[k] || (blob.records[k] = []);
-    const map = new Map();
-    cur.forEach((e, i) => {
-      const rec = Object.assign({}, e);
-      if(rec.id == null || String(rec.id).trim() === '') rec.id = stableImportedRecordId(k, i, rec);
-      rec.id = String(rec.id);
-      map.set(rec.id, rec);
-    });
-    (Array.isArray(list) ? list : []).forEach((row, i) => {
-      const e = Object.assign({}, row);
-      if(e.id == null || String(e.id).trim() === '') e.id = stableImportedRecordId(k, cur.length + i, e);
-      e.id = String(e.id);
-      const ex = map.get(e.id);
-      if(!ex){ map.set(e.id, e); addedRecords++; }
-      else if((e.updatedAt || e.createdAt || 0) > (ex.updatedAt || ex.createdAt || 0)){
-        map.set(e.id, e); updatedRecords++;
-      }
-    });
-    blob.records[k] = Array.from(map.values());
-  });
-  Object.entries((imp.settings && imp.settings.users) || {}).forEach(([k, v]) => {
-    blob.settings.users[k] = Object.assign(blob.settings.users[k] || {}, v);
-  });
-  if(imp.settings && imp.settings.theme && !blob.settings.theme) blob.settings.theme = imp.settings.theme;
   commit();
-  return { addedAccounts, addedRecords, updatedRecords };
+  return result;
 }
 function importChoiceModal(imp){
   const n = Object.keys(imp.accounts || {}).length;
@@ -827,6 +977,11 @@ function importChoiceModal(imp){
     try{
       const result = mergeBlob(imp);
       closeModal();
+      if(!currentUser){
+        blob.settings.lastUser = imp.owner || imp.settings.lastUser || Object.keys(imp.accounts)[0];
+        blob.settings.session = null;
+        saveLS(); showAuth();
+      }
       toast(`导入完成：新增 ${result.addedAccounts} 个账号、${result.addedRecords} 条记录，更新 ${result.updatedRecords} 条`, 'success');
     }catch(err){ toast('合并导入失败：' + (err.message || err), 'error'); }
   };
@@ -839,15 +994,27 @@ function importChoiceModal(imp){
         try{
           const activeUser = currentUser;
           const previousSession = blob.settings && blob.settings.session;
+          const previousRecords = activeUser ? (blob.records[activeUser] || []).slice() : [];
           blob = migrate(JSON.parse(JSON.stringify(imp)));
-          const targetUser = (activeUser && blob.accounts[activeUser]) ? activeUser :
-            (blob.settings.session && blob.accounts[blob.settings.session.user] ? blob.settings.session.user :
-            (blob.settings.lastUser && blob.accounts[blob.settings.lastUser] ? blob.settings.lastUser : null));
+          const targetUser = (activeUser && blob.accounts[activeUser]) ? activeUser : null;
           currentUser = targetUser;
           if(targetUser){
             blob.settings.lastUser = targetUser;
             blob.settings.session = previousSession && previousSession.user === targetUser ? previousSession : null;
-          }else blob.settings.session = null;
+            const retained = new Set((blob.records[targetUser] || []).map(record => record.id));
+            previousRecords.forEach(record => {
+              if(!retained.has(record.id)){
+                userSettings().deletedRecords[record.id] = Math.max(Date.now(), (record.updatedAt || record.createdAt || 0) + 1);
+              }
+            });
+            touchSettings();
+            userSettings().draftUpdatedAt = Date.now();
+            currentAccount().updatedAt = Date.now();
+          }else{
+            blob.settings.session = null;
+            clearTimeout(fwTimer);
+            fileHandle = null; fileOwner = null; fileConnected = false; fileLegacy = false;
+          }
           applyTheme();
           commit();
           if(currentUser) enterApp(); else showAuth();
@@ -865,12 +1032,16 @@ function applyTheme(){
   document.documentElement.classList.toggle('dark', dark);
   localStorage.setItem(THEME_KEY, t);
 }
-function currentTheme(){ return (blob && blob.settings.theme) || localStorage.getItem(THEME_KEY) || 'auto'; }
+function currentTheme(){
+  return (currentUser && userSettings().theme) || (blob && blob.settings.theme) || localStorage.getItem(THEME_KEY) || 'auto';
+}
 function setTheme(t){
   if(blob) blob.settings.theme = t;
+  if(currentUser){ userSettings().theme = t; touchSettings(); }
   localStorage.setItem(THEME_KEY, t);
   applyTheme();
-  saveLS();
+  persistUserState();
+  updateThemeBtn();
   if(view === 'settings') renderSettings();
 }
 function cycleTheme(){
@@ -909,10 +1080,7 @@ async function hashPassword(password, salt){
 }
 function currentAccount(){ return blob.accounts[currentUser]; }
 function currentSettings(){
-  const u = blob.settings.users;
-  if(!u[currentUser]) u[currentUser] = { ai:{ enabled:false, baseUrl:'', apiKey:'', model:'' } };
-  if(!u[currentUser].ai) u[currentUser].ai = { enabled:false, baseUrl:'', apiKey:'', model:'' };
-  return u[currentUser];
+  return userSettings();
 }
 function myRecords(){ return blob.records[currentUser] || (blob.records[currentUser] = []); }
 
@@ -924,7 +1092,7 @@ async function doLogin(){
   if(!acc){ toast('账号不存在，请先注册', 'error'); return; }
   const hash = await hashPassword(pwd, acc.salt);
   if(hash !== acc.hash){ toast('密码错误', 'error'); $('#auth-card').classList.remove('shake'); void $('#auth-card').offsetWidth; $('#auth-card').classList.add('shake'); return; }
-  loginAs(key, $('#login-remember').checked);
+  await loginAs(key, $('#login-remember').checked);
 }
 async function doRegister(){
   const name = $('#reg-user').value.trim();
@@ -940,21 +1108,35 @@ async function doRegister(){
   blob.accounts[key] = { name, salt, hash, displayName:display, createdAt:Date.now() };
   blob.records[key] = [];
   blob.settings.users[key] = { ai:{ enabled:false, baseUrl:'', apiKey:'', model:'' } };
-  loginAs(key, true);
+  await loginAs(key, true);
   welcomeModal();
 }
-function loginAs(key, remember){
+async function loginAs(key, remember){
+  if(fileConnected) await writeToFileNow();
+  clearTimeout(fwTimer);
+  await fileTask;
+  fileHandle = null; fileOwner = null; fileConnected = false; fileLegacy = false;
   currentUser = key;
+  dailyFilter = { range:'today', project:'', category:'', q:'' };
+  weekAI = null; monthAI = null; backupBannerDismissed = false;
+  await restoreFileHandle(key);
   blob.settings.session = remember ? { user:key, expires:Date.now() + 30 * 864e5 } : null;
   blob.settings.lastUser = key;
   commit();
+  applyTheme();
   enterApp();
 }
-function logout(){
+async function logout(){
+  if(currentUser && view === 'daily') saveDailyDraft();
+  clearTimeout(fwTimer);
+  if(fileConnected) await writeToFileNow();
+  await fileTask;
+  fileHandle = null; fileOwner = null; fileConnected = false; fileLegacy = false;
   currentUser = null;
   blob.settings.session = null;
   commit();
   showAuth();
+  clearBanner();
   toast('已退出登录', 'info');
 }
 function showAuth(){
@@ -964,6 +1146,7 @@ function showAuth(){
   switchAuthTab(hasAccounts ? 'login' : 'register');
   if(hasAccounts && blob.settings.lastUser) $('#login-user').value = blob.settings.lastUser;
   $('#login-pass').value = '';
+  $('#auth-data-status').textContent = '已有数据文件可直接导入，再用原账号密码登录。未绑定 JSON 的账号只保存在此浏览器。';
 }
 function switchAuthTab(tab){
   $$('#auth-tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
@@ -1022,10 +1205,9 @@ function showReconnectBanner(){
 }
 function maybeBackupBanner(){
   if(backupBannerDismissed || fileHandle) return;
-  if(myRecords().length === 0) return;
-  if(Date.now() - (blob.settings.lastExportAt || 0) < 7 * 864e5) return;
+  if(Date.now() - (currentSettings().lastExportAt || 0) < 7 * 864e5) return;
   banner(`
-    <span class="grow">提示：当前数据仅保存在浏览器中。建议绑定数据文件或导出备份，防止浏览器数据被清理后丢失。</span>
+    <span class="grow">当前账号仅保存在此浏览器，尚未绑定 JSON 文件。</span>
     <button class="btn primary sm" id="bn-bind">绑定数据文件</button>
     <button class="btn ghost sm" id="bn-export">导出备份</button>
     <button class="icon-btn" id="bn-close" title="本次不再提示">${icon('x', 15)}</button>`, 'warn');
@@ -1075,6 +1257,41 @@ function copyText(t){
 }
 
 /* ========== 记录视图 ========== */
+function categoryNames(includeRecords = false){
+  const names = [...CATEGORIES.filter(name => name !== '其他'), ...currentSettings().categories];
+  if(includeRecords) names.push(...myRecords().map(record => record.category));
+  return Array.from(new Set(names.filter(name => typeof name === 'string' && name.trim()).map(name => name.trim()))).filter(name => name !== '其他').concat('其他');
+}
+function categoryOptions(selected = CATEGORIES[0], includeRecords = false){
+  const names = categoryNames(includeRecords);
+  if(selected && !names.includes(selected)) names.splice(names.length - 1, 0, selected);
+  return names.map(name => `<option value="${esc(name)}" ${name === selected ? 'selected' : ''}>${esc(name)}</option>`).join('');
+}
+function customCategoryHtml(prefix){
+  return `<div class="category-custom" id="${prefix}-category-custom" hidden>
+    <label class="field"><span>自定义分类（可选）</span><input id="${prefix}-category-name" maxlength="40" placeholder="输入分类名称"></label>
+    <label class="check"><input type="checkbox" id="${prefix}-category-remember">保存到我的分类</label>
+  </div>`;
+}
+function wireCategory(prefix, onChange = () => {}){
+  const select = $('#' + prefix + '-category');
+  select.addEventListener('change', () => {
+    $('#' + prefix + '-category-custom').hidden = select.value !== '其他';
+    onChange();
+  });
+  $('#' + prefix + '-category-name').addEventListener('input', onChange);
+  $('#' + prefix + '-category-remember').addEventListener('change', onChange);
+  $('#' + prefix + '-category-custom').hidden = select.value !== '其他';
+}
+function selectedCategory(prefix){
+  const selected = $('#' + prefix + '-category').value;
+  return selected === '其他' ? ($('#' + prefix + '-category-name').value.trim() || '其他') : selected;
+}
+function rememberCategory(prefix, name){
+  if(!$('#' + prefix + '-category-remember').checked || CATEGORIES.includes(name)) return;
+  const settings = currentSettings();
+  if(!settings.categories.includes(name)){ settings.categories.push(name); touchSettings(); }
+}
 function projectsOf(list){
   return Array.from(new Set(list.map(e => e.project || '未分类'))).sort();
 }
@@ -1142,9 +1359,10 @@ function buildDaily(){
       <div class="form-grid">
         <label class="field"><span>日期</span><input type="date" id="f-date" value="${todayStr()}"></label>
         <label class="field"><span>项目 / 模块</span><input id="f-project" list="project-list" placeholder="如：XX平台驱动开发"><datalist id="project-list">${names.map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
-        <label class="field"><span>分类</span><select id="f-category">${CATEGORIES.map(c => `<option>${c}</option>`).join('')}</select></label>
+        <label class="field"><span>分类</span><select id="f-category">${categoryOptions()}</select></label>
         <label class="field"><span>耗时（小时）</span><input id="f-hours" type="number" min="0" step="0.5" placeholder="可选"></label>
       </div>
+      ${customCategoryHtml('f')}
       <div class="status-row"><span>状态</span>${segHtml('f-status', ['已完成','进行中'], '已完成')}</div>
       <label class="field"><span>今天做了什么</span><textarea id="f-content" rows="3" placeholder="记录完成的工作、遇到的问题、结论……（Ctrl + Enter 保存）"></textarea></label>
       <div class="form-foot"><button class="btn primary" id="btn-add">${icon('check')}保存记录</button></div>
@@ -1155,13 +1373,14 @@ function buildDaily(){
         ${[['all','全部'],['today','今天'],['week','本周'],['month','本月']].map(([v, l]) => `<button data-range="${v}" class="${dailyFilter.range === v ? 'active' : ''}">${l}</button>`).join('')}
       </div>
       <div class="filter-fields">
-        <div class="search-box">${icon('search', 15)}<input id="filter-q" placeholder="搜索内容或项目"></div>
+        <div class="search-box">${icon('search', 15)}<input id="filter-q" value="${esc(dailyFilter.q)}" placeholder="搜索内容或项目"></div>
         <select id="filter-project"><option value="">全部项目</option>${names.map(n => `<option value="${esc(n)}" ${dailyFilter.project === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>
-        <select id="filter-category"><option value="">全部分类</option>${CATEGORIES.map(c => `<option ${dailyFilter.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select>
+        <select id="filter-category"><option value="">全部分类</option>${categoryOptions(dailyFilter.category, true)}</select>
       </div>
     </div>
     <div id="daily-list"></div>`;
   wireSeg('f-status');
+  wireCategory('f', saveDailyDraft);
   restoreDailyDraft();
   $('#btn-add').onclick = addEntry;
   $('#f-content').addEventListener('keydown', e => { if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)) addEntry(); });
@@ -1199,6 +1418,10 @@ function refreshProjectOptions(){
   if(sel){
     sel.innerHTML = `<option value="">全部项目</option>` + names.map(n => `<option value="${esc(n)}" ${dailyFilter.project === n ? 'selected' : ''}>${esc(n)}</option>`).join('');
   }
+  const category = $('#f-category');
+  if(category) category.innerHTML = categoryOptions(category.value);
+  const filter = $('#filter-category');
+  if(filter) filter.innerHTML = '<option value="">全部分类</option>' + categoryOptions(dailyFilter.category, true);
 }
 function renderDailyStats(){
   const el = $('#daily-stats');
@@ -1247,26 +1470,37 @@ function saveDailyDraft(){
     date: $('#f-date')?.value || todayStr(),
     project: $('#f-project')?.value || '',
     category: $('#f-category')?.value || CATEGORIES[0],
+    customCategory: $('#f-category-name')?.value || '',
+    rememberCategory: $('#f-category-remember')?.checked || false,
     hours: $('#f-hours')?.value || '',
     status: segVal('f-status') || '已完成',
     content: content.value || ''
   };
   try{
-    if(Object.values(draft).some(v => String(v).trim() !== '')){
+    const meaningful = draft.content.trim() || draft.project.trim() || draft.hours || draft.customCategory.trim() || draft.date !== todayStr();
+    userSettings().draft = meaningful ? draft : null;
+    userSettings().draftUpdatedAt = Date.now();
+    if(meaningful){
       localStorage.setItem(dailyDraftKey(), JSON.stringify(draft));
     }else{
       localStorage.removeItem(dailyDraftKey());
     }
   }catch(e){}
+  persistUserState();
 }
 function restoreDailyDraft(){
   try{
+    const settings = userSettings();
     const raw = localStorage.getItem(dailyDraftKey());
-    if(!raw) return;
-    const d = JSON.parse(raw);
+    const d = Object.prototype.hasOwnProperty.call(settings, 'draft') ? settings.draft : (raw && JSON.parse(raw));
+    if(!d) return;
+    if(!settings.draftUpdatedAt){ settings.draft = d; settings.draftUpdatedAt = Date.now(); }
     if($('#f-date')) $('#f-date').value = d.date || todayStr();
     if($('#f-project')) $('#f-project').value = d.project || '';
-    if($('#f-category')) $('#f-category').value = d.category || CATEGORIES[0];
+    if($('#f-category')) $('#f-category').innerHTML = categoryOptions(d.category || CATEGORIES[0]);
+    if($('#f-category-name')) $('#f-category-name').value = d.customCategory || '';
+    if($('#f-category-remember')) $('#f-category-remember').checked = !!d.rememberCategory;
+    if($('#f-category-custom')) $('#f-category-custom').hidden = $('#f-category').value !== '其他';
     if($('#f-hours')) $('#f-hours').value = d.hours || '';
     if($('#f-content')) $('#f-content').value = d.content || '';
     const status = $('#f-status');
@@ -1277,6 +1511,7 @@ function restoreDailyDraft(){
 }
 function clearDailyDraft(){
   try{ localStorage.removeItem(dailyDraftKey()); }catch(e){}
+  if(currentUser){ userSettings().draft = null; userSettings().draftUpdatedAt = Date.now(); }
 }
 
 function addEntry(){
@@ -1287,17 +1522,24 @@ function addEntry(){
   const entry = {
     id:uid(), date,
     project:$('#f-project').value.trim(),
-    category:$('#f-category').value,
+    category:selectedCategory('f'),
     content, status:segVal('f-status') || '已完成',
     hours:isFinite(h) && h > 0 ? Math.round(h * 10) / 10 : null,
     createdAt:Date.now(), updatedAt:Date.now()
   };
+  rememberCategory('f', entry.category);
   myRecords().push(entry);
   clearDailyDraft();
   commit();
   $('#f-content').value = '';
   autoGrow($('#f-content'));
   $('#f-hours').value = '';
+  $('#f-category-name').value = '';
+  $('#f-category-remember').checked = false;
+  if(currentSettings().categories.includes(entry.category)){
+    $('#f-category').innerHTML = categoryOptions(entry.category);
+    $('#f-category-custom').hidden = true;
+  }
   toast('记录已保存', 'success');
 }
 function autoGrow(ta){
@@ -1312,9 +1554,10 @@ function openEntryModal(rec){
       <div class="form-grid">
         <label class="field"><span>日期</span><input type="date" id="m-date" value="${rec ? rec.date : todayStr()}"></label>
         <label class="field"><span>项目 / 模块</span><input id="m-project" list="modal-projects" value="${esc(rec ? rec.project || '' : '')}"><datalist id="modal-projects">${projectsOf(myRecords()).map(n => `<option value="${esc(n)}">`).join('')}</datalist></label>
-        <label class="field"><span>分类</span><select id="m-category">${CATEGORIES.map(c => `<option ${rec && rec.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+        <label class="field"><span>分类</span><select id="m-category">${categoryOptions(rec ? rec.category : CATEGORIES[0])}</select></label>
         <label class="field"><span>耗时（小时）</span><input id="m-hours" type="number" min="0" step="0.5" value="${rec && rec.hours ? rec.hours : ''}"></label>
       </div>
+      ${customCategoryHtml('m')}
       <div class="status-row"><span>状态</span>${segHtml('m-status', ['已完成','进行中'], rec ? rec.status || '已完成' : '已完成')}</div>
       <label class="field"><span>内容</span><textarea id="m-content" rows="4">${esc(rec ? rec.content : '')}</textarea></label>
     </div>
@@ -1323,6 +1566,7 @@ function openEntryModal(rec){
       <button class="btn primary" id="m-save">${icon('check')}保存</button>
     </div>`);
   wireSeg('m-status');
+  wireCategory('m');
   $('#m-cancel').onclick = closeModal;
   $('#m-save').onclick = () => {
     const content = $('#m-content').value.trim();
@@ -1331,12 +1575,13 @@ function openEntryModal(rec){
     const patch = {
       date:$('#m-date').value || todayStr(),
       project:$('#m-project').value.trim(),
-      category:$('#m-category').value,
+      category:selectedCategory('m'),
       content,
       status:segVal('m-status') || '已完成',
       hours:isFinite(h) && h > 0 ? Math.round(h * 10) / 10 : null,
       updatedAt:Date.now()
     };
+    rememberCategory('m', patch.category);
     if(rec){
       Object.assign(myRecords().find(x => x.id === rec.id), patch);
       toast('已更新', 'success');
@@ -1360,7 +1605,10 @@ function confirmDeleteEntry(rec){
     onOk:() => {
       const arr = myRecords();
       const i = arr.findIndex(x => x.id === rec.id);
-      if(i > -1) arr.splice(i, 1);
+      if(i > -1){
+        userSettings().deletedRecords[rec.id] = Math.max(Date.now(), (rec.updatedAt || rec.createdAt || 0) + 1);
+        arr.splice(i, 1);
+      }
       commit();
       toast('记录已删除', 'info');
     }
@@ -1478,6 +1726,7 @@ function renderWeekly(){
     </section>`
     : emptyState('本周还没有记录', '去「工作记录」写下本周第一条，或切换到其他周次查看')}
   `;
+  if(!recs.length) return;
   const pre = $('#w-report');
   const foot = $('#w-foot');
   const setReport = () => {
@@ -1583,6 +1832,7 @@ function renderMonthly(){
     </section>`
     : emptyState('本月还没有记录', '切换到其他月份，或去「工作记录」补充本月内容')}
   `;
+  if(!recs.length) return;
   wireSeg('m-mode');
   const pre = $('#mm-report');
   const foot = $('#mm-foot');
@@ -1619,29 +1869,235 @@ function renderMonthly(){
 }
 
 /* ========== AI 润色 ========== */
-async function aiChat(cfg, userText, sys){
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 60000);
-  try{
-    const res = await fetch(cfg.baseUrl.replace(/\/+$/, '') + '/chat/completions', {
-      method:'POST', signal:ctrl.signal,
-      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + cfg.apiKey },
-      body:JSON.stringify({ model:cfg.model || 'gpt-3.5-turbo', temperature:0.4,
-        messages:[{ role:'system', content:sys }, { role:'user', content:userText }] })
-    });
-    if(!res.ok){
-      let msg = 'HTTP ' + res.status;
-      try{ const j = await res.json(); if(j.error && j.error.message) msg = j.error.message; }catch(e){}
-      throw new Error(msg);
+const AI_BRIDGE = 'http://127.0.0.1:17654';
+let aiBridgeStartTask = null;
+let aiBridgeProbe = 0;
+function aiOpenLauncher(){
+  window.location.href = 'gongji-ai://start';
+}
+async function aiStartBridge(timeout=15000){
+  if(aiBridgeStartTask) return aiBridgeStartTask;
+  aiBridgeProbe++;
+  // Keep the OS launch in the original click so the browser can request permission.
+  aiOpenLauncher();
+  aiBridgeStartTask = (async () => {
+    const deadline = Date.now() + timeout;
+    const signal = AbortSignal.timeout(timeout);
+    while(Date.now() < deadline){
+      try{
+        if(await aiBridgeToken(signal)) return;
+      }catch(e){
+        if(!signal.aborted) throw e;
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 350));
     }
-    const j = await res.json();
-    const txt = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
-    if(!txt) throw new Error('响应格式异常');
-    return txt.trim();
-  }finally{ clearTimeout(timer); }
+    throw new Error('未能启动本机服务。请允许浏览器打开「工记 AI」；此电脑首次使用或项目移动目录后，需运行一次「启动AI助手.cmd」完成网页启动配置。');
+  })().finally(() => { aiBridgeStartTask = null; });
+  return aiBridgeStartTask;
+}
+async function refreshAIServiceStatus(){
+  const status = $('#ai-service-status');
+  const button = $('#btn-ai-start');
+  if(!status || !button || aiBridgeStartTask) return;
+  const probe = ++aiBridgeProbe;
+  const token = await aiBridgeToken(AbortSignal.timeout(2000));
+  if(!status.isConnected || aiBridgeStartTask || probe !== aiBridgeProbe) return;
+  status.textContent = token ? '本机 AI 服务已就绪' : '本机 AI 服务未启动';
+  $('#ai-service-dot').className = 'ds-dot ' + (token ? 'green' : 'amber');
+  button.disabled = !!token;
+}
+function offerAIServiceStart(error, retry){
+  if(!error.needsBridge) return;
+  const owner = currentUser;
+  openModal(`
+    <div class="modal-head"><h3>启动本机 AI 服务</h3></div>
+    <div class="modal-body"><p class="modal-text" id="ai-launch-status">本机服务尚未运行，启动后将继续本次 AI 请求。</p></div>
+    <div class="modal-foot">
+      <button class="btn ghost" id="ai-launch-cancel">取消</button>
+      <button class="btn primary" id="ai-launch-confirm">${icon('sparkles', 15)}启动并继续</button>
+    </div>`, false);
+  $('#ai-launch-cancel').onclick = closeModal;
+  $('#ai-launch-confirm').onclick = async ev => {
+    const button = ev.currentTarget;
+    const status = $('#ai-launch-status');
+    button.disabled = true;
+    status.textContent = '正在等待本机服务启动…';
+    try{
+      await aiStartBridge();
+      if(!status.isConnected || currentUser !== owner) return;
+      closeModal();
+      refreshAIServiceStatus();
+      retry();
+    }catch(e){
+      if(status.isConnected) status.textContent = e.message;
+    }finally{ button.disabled = false; }
+  };
+}
+function aiConfigFromForm(){
+  return {
+    enabled:$('#ai-toggle').checked,
+    baseUrl:$('#ai-base').value.trim(),
+    apiKey:$('#ai-key').value.trim(),
+    model:$('#ai-model').value.trim(),
+    protocol:$('#ai-protocol').value,
+    transport:$('#ai-transport').value
+  };
+}
+function aiBases(cfg){
+  let url;
+  try{ url = new URL(cfg.baseUrl); }catch(e){ throw new Error('接口地址无效，请填写完整的 http:// 或 https:// 地址'); }
+  if(!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash){
+    throw new Error('接口地址仅支持 HTTP / HTTPS，请移除用户名、密码、查询参数和片段');
+  }
+  const base = url.href.replace(/\/+$/, '').replace(/\/(?:chat\/completions|responses|models)$/, '');
+  return [...new Set([base, /\/v1$/.test(base) ? base.slice(0, -3) : base + '/v1'])];
+}
+function aiError(message, status=0, endpointMismatch=false){
+  return Object.assign(new Error(message), { status, endpointMismatch });
+}
+function aiErrorText(error, apiKey=''){
+  if(['AbortError','TimeoutError'].includes(error.name)) return '请求超时，请稍后重试';
+  if(error.needsBridge) return '本机 AI 服务未启动，可在网页中启动后继续';
+  if(error instanceof TypeError) return '浏览器无法连接接口，请检查网络，或在设置中启动本机 AI 服务后使用自动连接';
+  const message = error.message || String(error);
+  return apiKey ? message.split(apiKey).join('[API Key]') : message;
+}
+async function aiBridgeToken(signal){
+  const timeout = AbortSignal.timeout(1200);
+  try{
+    const res = await fetch(AI_BRIDGE + '/health', {
+      signal:AbortSignal.any([signal, timeout]), cache:'no-store', credentials:'omit', referrerPolicy:'no-referrer'
+    });
+    const info = await res.json();
+    return res.ok && info.app === 'gongji-ai-bridge' && info.version === 1 && typeof info.token === 'string' ? info.token : null;
+  }catch(e){
+    if(signal.aborted) throw e;
+    return null;
+  }
+}
+function aiDecode(text){
+  try{ return JSON.parse(text); }catch(e){}
+  // Some compatible gateways return SSE even when a non-streaming reply was requested.
+  let combined = '', final = null;
+  for(const line of text.split(/\r?\n/)){
+    if(!line.startsWith('data:')) continue;
+    const data = line.slice(5).trim();
+    if(!data || data === '[DONE]') continue;
+    let event;
+    try{ event = JSON.parse(data); }catch(e){ continue; }
+    if(event.error || event.type === 'error') throw new Error(event.error?.message || event.message || '接口返回错误');
+    if(event.type === 'response.failed') throw new Error(event.response?.error?.message || '模型生成失败');
+    if(event.response && ['response.completed','response.incomplete'].includes(event.type)) final = event.response;
+    if(event.type === 'response.output_text.delta') combined += event.delta || '';
+    const delta = event.choices?.[0]?.delta?.content;
+    if(typeof delta === 'string') combined += delta;
+  }
+  if(final) return final;
+  if(combined) return { output_text:combined };
+  return null;
+}
+async function aiRequest(cfg, url, body, signal, token){
+  let res, raw;
+  try{
+    res = await fetch(token ? AI_BRIDGE + '/request' : url, {
+    method:token || body ? 'POST' : 'GET', signal, cache:'no-store', credentials:'omit', referrerPolicy:'no-referrer',
+    headers:token
+      ? { 'Content-Type':'application/json', 'X-Gongji-Token':token }
+      : { ...(body ? { 'Content-Type':'application/json' } : {}), 'Authorization':'Bearer ' + cfg.apiKey },
+    ...(token ? { body:JSON.stringify({ url, apiKey:cfg.apiKey, body }) } : body ? { body:JSON.stringify(body) } : {})
+    });
+    raw = await res.text();
+  }catch(e){
+    if(cfg.transport !== 'direct' && e instanceof TypeError) e.needsBridge = true;
+    throw e;
+  }
+  let data;
+  try{ data = aiDecode(raw); }catch(e){ if(res.ok) throw e; }
+  if(!res.ok){
+    const detail = data?.error?.message || data?.message || (typeof data?.error === 'string' ? data.error : '');
+    const hint = { 401:'API Key 无效或已过期', 403:'接口拒绝访问，请检查 Key 权限或访问限制', 404:'接口路径或模型不存在',
+      429:'请求过于频繁或额度不足', 502:'上游服务连接失败', 503:'模型服务暂不可用' }[res.status] || '接口请求失败';
+    const safeDetail = String(detail).split(cfg.apiKey).join('[API Key]').slice(0, 350);
+    throw aiError(`HTTP ${res.status}：${safeDetail || hint}`, res.status);
+  }
+  if(!data) throw aiError('接口返回了非 JSON 数据，请检查接口地址是否为 API 地址', res.status, true);
+  if(data.error) throw aiError(data.error.message || String(data.error), res.status);
+  return data;
+}
+async function aiConnection(cfg, signal){
+  if(!cfg.apiKey) throw new Error('请填写 API Key');
+  if(cfg.transport === 'direct') return null;
+  const token = await aiBridgeToken(signal);
+  if(!token && cfg.transport === 'local') throw Object.assign(new Error('本机 AI 服务未启动'), { needsBridge:true });
+  return token;
+}
+function aiCanTryNext(error){
+  return error.endpointMismatch || [404,405,501].includes(error.status) ||
+    (error.status === 400 && /unsupported|not supported|not implemented|responses|chat.?completions|不支持|input.*required/i.test(error.message));
+}
+function aiReplyText(data){
+  if(data.status === 'failed') throw new Error(data.error?.message || '模型生成失败');
+  if(data.status === 'incomplete') throw new Error('模型回复未完成，请重试或更换模型');
+  const content = data.choices?.[0]?.message?.content;
+  if(typeof content === 'string') return content.trim();
+  if(Array.isArray(content)) return content.map(part => part?.text || '').join('').trim();
+  if(typeof data.output_text === 'string') return data.output_text.trim();
+  return (Array.isArray(data.output) ? data.output : []).flatMap(item => item?.type === 'message' ? item.content || [] : [])
+    .filter(part => part?.type === 'output_text').map(part => part.text || '').join('').trim();
+}
+async function aiChat(cfg, userText, sys){
+  if(!cfg.model) throw new Error('请先填写模型名称，或点击「获取模型」后选择');
+  const bases = aiBases(cfg);
+  const signal = AbortSignal.timeout(120000);
+  const token = await aiConnection(cfg, signal);
+  const protocol = cfg.protocol || 'auto';
+  const preferResponses = /\/responses\/?$/.test(cfg.baseUrl);
+  const protocols = protocol === 'auto'
+    ? (preferResponses ? ['responses','chat'] : ['chat','responses']) : [protocol];
+  let lastError;
+  for(const base of bases){
+    for(const type of protocols){
+      const endpoint = type === 'responses' ? 'responses' : 'chat/completions';
+      const body = type === 'responses'
+        ? { model:cfg.model, store:false, stream:false,
+            input:[{ role:'system', content:sys }, { role:'user', content:userText }] }
+        : { model:cfg.model, stream:false, messages:[{ role:'system', content:sys }, { role:'user', content:userText }] };
+      try{
+        const data = await aiRequest(cfg, base + '/' + endpoint, body, signal, token);
+        const text = aiReplyText(data);
+        if(!text) throw new Error('模型没有返回文字，请确认所选模型支持文本对话');
+        return text;
+      }catch(e){
+        if(!aiCanTryNext(e)) throw e;
+        lastError = e;
+      }
+    }
+  }
+  throw lastError;
+}
+async function aiModels(cfg){
+  const signal = AbortSignal.timeout(30000);
+  const bases = aiBases(cfg);
+  const token = await aiConnection(cfg, signal);
+  let lastError;
+  for(const base of bases){
+    try{
+      const data = await aiRequest(cfg, base + '/models', null, signal, token);
+      if(!Array.isArray(data.data)) throw new Error('接口未返回可用模型列表，仍可手动填写模型名称');
+      const models = [...new Set(data.data.map(item => item?.id).filter(id => typeof id === 'string' && id.trim()))].sort();
+      if(!models.length) throw new Error('此 Key 的模型列表为空，仍可手动填写服务商提供的模型名称');
+      return models;
+    }catch(e){
+      if(!aiCanTryNext(e)) throw e;
+      lastError = e;
+    }
+  }
+  throw lastError;
 }
 async function runAI(kind, btn, reportText, apply){
-  const cfg = currentSettings().ai;
+  const cfg = { ...currentSettings().ai };
+  const owner = currentUser;
   if(!cfg.enabled){ toast('请先在「设置 → AI 大模型」中开启并保存配置', 'info'); return; }
   if(!cfg.baseUrl || !cfg.apiKey){ toast('AI 配置不完整：请填写接口地址与 API Key', 'error'); return; }
   const old = btn.innerHTML;
@@ -1652,11 +2108,14 @@ async function runAI(kind, btn, reportText, apply){
       ? '你是一名专业的工作汇报写作助手。用户会提供一份按项目分组的一周工作记录总结，请将其改写成流畅、专业、突出成果与进展的中文周报正文：使用「本周完成」「进行中」等小节和简短分点，总字数约 200-300 字，直接输出正文内容，不要任何解释或开场白。'
       : '你是一名专业的工作汇报写作助手。用户会提供一份按项目分组的月度工作记录总结，请将其改写成适合直接粘贴到汇报 PPT 的中文月度总结：先给一句整体概括，再按项目用短句列出主要成果（每项 1-2 行），最后如有未完成事项用一句话说明。直接输出正文内容，不要任何解释。';
     const txt = await aiChat(cfg, '原始总结：\n' + reportText, sys);
+    if(currentUser !== owner || !btn.isConnected) return;
     apply(txt);
     toast('AI 润色完成', 'success');
   }catch(e){
-    const msg = e.name === 'AbortError' ? '请求超时' : (e instanceof TypeError ? '网络请求失败（请检查接口地址，或该接口不支持浏览器直连）' : e.message);
-    toast('AI 请求失败：' + msg, 'error');
+    if(currentUser === owner && btn.isConnected){
+      toast('AI 请求失败：' + aiErrorText(e, cfg.apiKey), 'error');
+      offerAIServiceStart(e, () => { if(btn.isConnected) btn.click(); });
+    }
   }finally{
     btn.disabled = false;
     btn.innerHTML = old;
@@ -1665,14 +2124,26 @@ async function runAI(kind, btn, reportText, apply){
 
 /* ========== 设置页 ========== */
 function lastExportText(){
-  const t = blob.settings.lastExportAt;
+  const t = currentUser ? currentSettings().lastExportAt : 0;
   return t ? '上次导出：' + fmtDate(new Date(t)) : '尚未导出过备份';
 }
 function dsStatusHtml(){
   if(!fsSupported) return '<span class="ds-dot amber"></span>浏览器存储模式（当前浏览器不支持数据文件绑定，建议使用 Edge 或 Chrome）';
-  if(fileHandle && fileConnected) return `<span class="ds-dot green"></span>已绑定「${esc(fileHandle.name)}」，每次修改自动写入文件`;
+  if(fileHandle && fileConnected) return `<span class="ds-dot green"></span>${fileLegacy ? '旧版多账号文件 · ' : ''}已绑定「${esc(fileHandle.name)}」${lastFileSyncAt ? ' · 最近同步 ' + new Date(lastFileSyncAt).toLocaleTimeString() : ''}`;
   if(fileHandle) return `<span class="ds-dot amber"></span>数据文件待重新授权 <button class="link" id="ds-reconnect">点击重新连接</button>`;
-  return '<span class="ds-dot amber"></span>未绑定数据文件，数据仅保存在浏览器中';
+  return '<span class="ds-dot amber"></span>仅保存在此浏览器，尚未创建或绑定 JSON 文件';
+}
+function updateDataStatus(){
+  const location = $('#storage-location');
+  if(location) location.textContent = fileHandle
+    ? (fileConnected ? '自动保存到：' : '待重新连接：') + fileHandle.name
+    : '数据位置：此浏览器（未绑定 JSON）';
+  const ds = $('#ds-status');
+  if(ds) ds.innerHTML = dsStatusHtml();
+  const rc = $('#ds-reconnect');
+  if(rc) rc.onclick = reconnectFile;
+  const le = $('#last-export');
+  if(le) le.textContent = lastExportText();
 }
 function renderSettings(){
   const acc = currentAccount();
@@ -1689,18 +2160,26 @@ function renderSettings(){
     </section>
 
     <section class="card">
+      <h2 class="card-title">我的分类</h2>
+      <div class="category-list" id="my-categories-list">${currentSettings().categories.map(name =>
+        `<span class="chip">${esc(name)}<button class="icon-btn" data-remove-category="${esc(name)}" title="移出我的分类" aria-label="移出分类 ${esc(name)}">${icon('x', 13)}</button></span>`
+      ).join('') || '<span class="muted-sm">暂无个人分类</span>'}</div>
+    </section>
+
+    <section class="card">
       <h2 class="card-title">用户数据 JSON 文件</h2>
       <div class="data-status" id="ds-status">${dsStatusHtml()}</div>
       ${fsSupported ? `
       <div class="btn-row">
         <button class="btn ghost sm" id="btn-file-new">${icon('file', 14)}创建用户数据 JSON</button>
         <button class="btn ghost sm" id="btn-file-open">${icon('link', 14)}绑定已有 JSON</button>
+        ${fileHandle ? '<button class="btn ghost sm" id="btn-file-sync">立即同步</button>' : ''}
         ${fileHandle ? '<button class="btn ghost sm" id="btn-file-unbind">断开绑定</button>' : ''}
       </div>
-      <p class="hint"><strong>推荐：</strong>点击“创建用户数据 JSON”，在文件保存窗口中手动选择与本 HTML 网页相同的文件夹，并保存为 <code>工记用户数据.json</code>。绑定后，注册账号、密码校验信息、工作记录和设置都会自动写入该 JSON 文件。浏览器安全限制不允许网页自行获取 HTML 所在目录，因此需要你在保存窗口中选择目录一次。换电脑时请同时复制 HTML 和 JSON 文件，再通过“绑定已有 JSON”选择数据文件。</p>` : ''}
+      <p class="hint">个人 JSON 包含当前账号、密码校验信息、记录、分类、配置和草稿。保存位置由你选择，可放在同步盘目录。换电脑后，在登录页打开这一个 JSON，再用原账号密码登录即可。</p>` : ''}
       <div class="divider"></div>
       <div class="btn-row">
-        <button class="btn ghost sm" id="btn-export">${icon('download', 14)}导出备份</button>
+        <button class="btn ghost sm" id="btn-export">${icon('download', 14)}导出个人 JSON</button>
         <button class="btn ghost sm" id="btn-import">${icon('upload', 14)}导入数据</button>
         <span class="hint inline" id="last-export">${lastExportText()}</span>
       </div>
@@ -1719,16 +2198,27 @@ function renderSettings(){
         <label class="switch"><input type="checkbox" id="ai-toggle" ${cfg.enabled ? 'checked' : ''}><i></i></label>
       </div>
       <p class="hint" style="margin-top:0">开启后，周视图与月报页会出现「AI 润色」按钮，可把规则生成的总结交给大模型改写成更流畅的汇报文字。支持 OpenAI 兼容接口（DeepSeek、通义千问、Moonshot 等），费用由你所选的模型服务商收取。</p>
+      <div class="ai-service">
+        <span class="ds-dot amber" id="ai-service-dot"></span>
+        <span class="hint" id="ai-service-status" role="status">正在检查本机 AI 服务…</span>
+        <button class="btn ghost sm" id="btn-ai-start">${icon('sparkles', 14)}启动 AI 服务</button>
+      </div>
       <div class="ai-fields">
         <label class="field"><span>接口地址 Base URL（例如 https://api.deepseek.com/v1）</span><input id="ai-base" class="input" value="${esc(cfg.baseUrl || '')}" placeholder="https://api.deepseek.com/v1"></label>
         <div class="row2">
           <label class="field"><span>API Key</span><input id="ai-key" type="password" class="input" value="${esc(cfg.apiKey || '')}" placeholder="sk-..."></label>
-          <label class="field"><span>模型名称</span><input id="ai-model" class="input" value="${esc(cfg.model || '')}" placeholder="deepseek-chat"></label>
+          <div class="field"><label for="ai-model">模型名称</label><div class="ai-model-row"><input id="ai-model" class="input" value="${esc(cfg.model || '')}" placeholder="选择或填写模型名称"><button class="btn ghost sm" id="btn-ai-models" title="获取此 Key 的模型列表">${icon('download', 14)}获取模型</button></div></div>
+        </div>
+        <label class="field model-list" id="ai-model-list-field" hidden><span>可用模型</span><select id="ai-model-list" class="input"></select></label>
+        <span class="muted-sm" id="ai-model-status" role="status"></span>
+        <div class="row2">
+          <label class="field"><span>接口协议</span><select id="ai-protocol" class="input">${[['auto','自动兼容'],['chat','Chat Completions'],['responses','Responses（Codex 类接口）']].map(([v,l]) => `<option value="${v}" ${(cfg.protocol || 'auto') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+          <label class="field"><span>连接方式</span><select id="ai-transport" class="input">${[['auto','自动（优先本机转发）'],['local','本机转发'],['direct','浏览器直连']].map(([v,l]) => `<option value="${v}" ${(cfg.transport || 'auto') === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         </div>
         <div class="btn-row">
           <button class="btn primary sm" id="btn-ai-save">保存 AI 配置</button>
           <button class="btn ghost sm" id="btn-ai-test">测试连接</button>
-          <span class="muted-sm" id="ai-test-status"></span>
+          <span class="muted-sm" id="ai-test-status" role="status"></span>
         </div>
       </div>
     </section>
@@ -1755,7 +2245,7 @@ function renderSettings(){
     <section class="card">
       <h2 class="card-title">关于与数据安全</h2>
       <ul class="about-list">
-        <li>• 所有数据（账号、记录、配置）只保存在你的电脑上：浏览器本地存储 + 可选的数据文件，不连接任何服务器。</li>
+        <li>• 账号、记录和配置保存在此电脑的浏览器与可选 JSON 文件中。使用 AI 时，汇报内容会发送给你配置的服务商。</li>
         <li>• 多人可共用一份软件，各自注册账号登录，数据按账号完全隔离。</li>
         <li>• 换电脑 / 换浏览器：导出备份 JSON 或复制已绑定的数据文件，在新设备上导入 / 绑定即可。</li>
         <li>• 版本 v${APP_VERSION} · 纯本地单文件应用，可离线使用。</li>
@@ -1766,14 +2256,42 @@ function renderSettings(){
     if(!b) return;
     setTheme(b.dataset.v);
   });
-  const ds = $('#ds-status');
-  const rc = $('#ds-reconnect');
-  if(rc) rc.onclick = reconnectFile;
+  updateDataStatus();
+  $('#btn-ai-start').onclick = async ev => {
+    const button = ev.currentTarget;
+    const status = $('#ai-service-status');
+    button.disabled = true;
+    status.textContent = '正在等待本机服务启动…';
+    try{
+      await aiStartBridge();
+      if(status.isConnected){
+        status.textContent = '本机 AI 服务已就绪';
+        $('#ai-service-dot').className = 'ds-dot green';
+      }
+    }catch(e){
+      if(status.isConnected){
+        status.textContent = e.message;
+        button.disabled = false;
+      }
+    }
+  };
+  refreshAIServiceStatus();
+  $('#my-categories-list').onclick = e => {
+    const button = e.target.closest('[data-remove-category]');
+    if(!button) return;
+    currentSettings().categories = currentSettings().categories.filter(name => name !== button.dataset.removeCategory);
+    touchSettings(); commit(); renderSettings();
+  };
   if(fsSupported){
     $('#btn-file-new').onclick = bindNewFile;
     $('#btn-file-open').onclick = bindExistingFile;
     const ub = $('#btn-file-unbind');
     if(ub) ub.onclick = unbindFile;
+    const sync = $('#btn-file-sync');
+    if(sync) sync.onclick = async () => {
+      if(!fileConnected){ await reconnectFile(); return; }
+      if(await syncFromFile()){ refreshApp(); toast('已与个人 JSON 同步', 'success'); }
+    };
   }
   $('#btn-export').onclick = exportBackup;
   $('#btn-import').onclick = () => $('#import-file').click();
@@ -1782,20 +2300,29 @@ function renderSettings(){
       title:'清空我的全部记录？',
       body:`将删除账号「${esc(currentAccount().displayName)}」下的所有工作记录，且无法恢复。`,
       danger:true, okText:'清空', requireText:'清空',
-      onOk:() => { blob.records[currentUser] = []; commit(); toast('记录已清空', 'info'); }
+      onOk:() => {
+        myRecords().forEach(record => {
+          userSettings().deletedRecords[record.id] = Math.max(Date.now(), (record.updatedAt || record.createdAt || 0) + 1);
+        });
+        blob.records[currentUser] = [];
+        commit(); toast('记录已清空', 'info');
+      }
     });
   };
   $('#btn-del-account').onclick = () => {
     confirmModal({
       title:'注销并删除我的账号？',
-      body:'将删除该账号、其全部记录与配置，且无法恢复。其他账号不受影响。',
+      body:'将删除此浏览器中的账号、记录和配置。已导出或绑定的 JSON 文件会保留。',
       danger:true, okText:'删除账号', requireText:currentAccount().name,
-      onOk:() => {
+      onOk:async () => {
+        await unbindFile();
+        clearDailyDraft();
         delete blob.accounts[currentUser];
         delete blob.records[currentUser];
         delete blob.settings.users[currentUser];
         currentUser = null;
         blob.settings.session = null;
+        blob.settings.lastUser = Object.keys(blob.accounts)[0] || '';
         commit();
         showAuth();
         toast('账号已删除', 'info');
@@ -1803,38 +2330,69 @@ function renderSettings(){
     });
   };
   $('#btn-ai-save').onclick = () => {
-    const c = currentSettings().ai;
-    c.enabled = $('#ai-toggle').checked;
-    c.baseUrl = $('#ai-base').value.trim();
-    c.apiKey = $('#ai-key').value.trim();
-    c.model = $('#ai-model').value.trim();
+    Object.assign(currentSettings().ai, aiConfigFromForm());
+    touchSettings();
     commit();
     toast('AI 配置已保存', 'success');
   };
   $('#btn-ai-test').onclick = async ev => {
     const btn = ev.currentTarget;
-    const c = {
-      enabled:true,
-      baseUrl:$('#ai-base').value.trim(),
-      apiKey:$('#ai-key').value.trim(),
-      model:$('#ai-model').value.trim()
-    };
+    const c = aiConfigFromForm();
     const st = $('#ai-test-status');
     if(!c.baseUrl || !c.apiKey){ st.textContent = '请先填写接口地址与 API Key'; return; }
     st.textContent = '测试中…';
     btn.disabled = true;
     try{
       const txt = await aiChat(c, '请只回复两个字：正常', '你是连通性测试助手。');
-      st.textContent = '连接成功：' + condense(txt, 20);
+      if(st.isConnected && JSON.stringify(c) === JSON.stringify(aiConfigFromForm())) st.textContent = '连接成功：' + condense(txt, 20);
     }catch(e){
-      const msg = e.name === 'AbortError' ? '请求超时' : (e instanceof TypeError ? '网络失败或接口不支持浏览器直连' : e.message);
-      st.textContent = '连接失败：' + msg;
+      if(st.isConnected && JSON.stringify(c) === JSON.stringify(aiConfigFromForm())){
+        st.textContent = '连接失败：' + aiErrorText(e, c.apiKey);
+        offerAIServiceStart(e, () => { if(btn.isConnected) btn.click(); });
+      }
     }finally{ btn.disabled = false; }
   };
+  $('#btn-ai-models').onclick = async ev => {
+    const btn = ev.currentTarget;
+    const cfg = aiConfigFromForm();
+    const st = $('#ai-model-status');
+    if(!cfg.baseUrl || !cfg.apiKey){ st.textContent = '请先填写接口地址与 API Key'; return; }
+    st.textContent = '正在获取模型…';
+    btn.disabled = true;
+    try{
+      const models = await aiModels(cfg);
+      if(!st.isConnected || JSON.stringify(cfg) !== JSON.stringify(aiConfigFromForm())) return;
+      const select = $('#ai-model-list');
+      select.innerHTML = '<option value="">选择模型</option>' + models.map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
+      if(models.includes(cfg.model)) select.value = cfg.model;
+      $('#ai-model-list-field').hidden = false;
+      st.textContent = `已获取 ${models.length} 个模型`;
+    }catch(e){
+      if(st.isConnected && JSON.stringify(cfg) === JSON.stringify(aiConfigFromForm())){
+        st.textContent = '获取失败：' + aiErrorText(e, cfg.apiKey) + '；可继续手动填写模型';
+        offerAIServiceStart(e, () => { if(btn.isConnected) btn.click(); });
+      }
+    }finally{ btn.disabled = false; }
+  };
+  $('#ai-model-list').onchange = ev => {
+    if(ev.target.value) $('#ai-model').value = ev.target.value;
+    $('#ai-test-status').textContent = '';
+  };
+  for(const id of ['ai-base','ai-key','ai-model','ai-protocol','ai-transport']){
+    $('#' + id).addEventListener('input', () => {
+      $('#ai-test-status').textContent = '';
+      if(id !== 'ai-model'){
+        $('#ai-model-list-field').hidden = true;
+        $('#ai-model-list').innerHTML = '';
+        $('#ai-model-status').textContent = '';
+      }
+    });
+  }
   $('#btn-acc-save').onclick = () => {
     const v = $('#acc-display').value.trim();
     if(!v){ toast('显示名不能为空', 'error'); return; }
     currentAccount().displayName = v;
+    currentAccount().updatedAt = Date.now();
     commit();
     toast('显示名已更新', 'success');
   };
@@ -1846,6 +2404,7 @@ function renderSettings(){
     if(oldHash !== acc.hash){ toast('当前密码不正确', 'error'); return; }
     acc.salt = uid().replace(/-/g,'');
     acc.hash = await hashPassword(nw, acc.salt);
+    acc.updatedAt = Date.now();
     commit();
     $('#pwd-old').value = ''; $('#pwd-new').value = '';
     toast('密码已修改', 'success');
@@ -1875,12 +2434,7 @@ function refreshApp(){
   if(!currentUser || !blob.accounts[currentUser]) return;
   updateChrome();
   if(view === 'settings'){
-    const ds = $('#ds-status');
-    if(ds) ds.innerHTML = dsStatusHtml();
-    const rc = $('#ds-reconnect');
-    if(rc) rc.onclick = reconnectFile;
-    const le = $('#last-export');
-    if(le) le.textContent = lastExportText();
+    updateDataStatus();
     return;
   }
   if(view === 'daily'){ updateDaily(); return; }
@@ -1896,16 +2450,17 @@ function updateChrome(){
   }
   $('#user-name').textContent = currentAccount().displayName || currentAccount().name;
   $('#user-avatar').textContent = (currentAccount().displayName || '用').slice(0, 1);
+  updateDataStatus();
 }
 function welcomeModal(){
   openModal(`
     <div class="modal-head"><h3>欢迎使用工记</h3></div>
     <div class="modal-body">
-      <p class="modal-text">两个小贴士，帮你用好它：</p>
-      <p class="modal-text"><strong>1. 数据只保存在你的电脑上</strong>，不会上传到服务器。<br><br><strong>2. 建议现在创建用户数据 JSON</strong>：在保存窗口里选择与本 HTML 网页相同的文件夹，文件名使用“工记用户数据.json”。绑定后，账号和工作记录会自动保存到该 JSON 文件，方便备份和迁移。</p>
+      <p class="modal-text"><strong>账号已注册，目前保存在此浏览器中，尚未生成 JSON 文件。</strong></p>
+      <p class="modal-text">创建个人 JSON 后，账号、记录、分类、配置和草稿都会自动写入同一个文件。可保存到本机文件夹或同步盘目录。</p>
     </div>
     <div class="modal-foot">
-      <button class="btn ghost" id="wc-later">稍后再说</button>
+      <button class="btn ghost" id="wc-later">暂用浏览器保存</button>
       <button class="btn primary" id="wc-bind">${fsSupported ? '创建用户数据 JSON' : '先导出一份备份'}</button>
     </div>`, false);
   $('#wc-later').onclick = () => { closeModal(); backupBannerDismissed = true; };
@@ -1914,6 +2469,11 @@ function welcomeModal(){
 
 /* ========== 事件绑定与启动 ========== */
 function wireAuth(){
+  $('#auth-import').innerHTML = icon('upload', 14) + '导入个人 JSON';
+  $('#auth-import').onclick = () => $('#import-file').click();
+  $('#auth-open').hidden = !fsSupported;
+  $('#auth-open').innerHTML = icon('link', 14) + '打开并绑定 JSON';
+  $('#auth-open').onclick = bindExistingFile;
   $('#auth-tabs').addEventListener('click', e => {
     const b = e.target.closest('button');
     if(b) switchAuthTab(b.dataset.tab);
@@ -1922,6 +2482,7 @@ function wireAuth(){
   $('#register-form').addEventListener('submit', e => { e.preventDefault(); doRegister(); });
 }
 function wireShell(){
+  $('#storage-location').onclick = () => { view = 'settings'; renderView(); };
   $$('.nav-item').forEach(b => b.addEventListener('click', () => {
     const target = b.dataset.view;
     if(target === view) return;
@@ -2021,16 +2582,34 @@ function wireShell(){
     }
   });
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if(currentTheme() === 'auto') applyTheme(); });
+  const syncIfActive = () => {
+    if(currentUser && fileConnected && !document.hidden) syncFromFile();
+  };
+  window.addEventListener('focus', () => {
+    syncIfActive();
+    if(currentUser && view === 'settings') refreshAIServiceStatus();
+  });
+  document.addEventListener('visibilitychange', syncIfActive);
+  setInterval(syncIfActive, 30000);
 }
 async function init(){
   wireAuth();
   wireShell();
-  await restoreFileHandle();
-  if(!blob) blob = migrate(loadLS() || defaultBlob());
-  if(fileConnected) saveLS();
+  blob = migrate(loadLS() || defaultBlob());
+  Object.keys(blob.accounts).forEach(user => {
+    const settings = userSettings(user);
+    if(Object.prototype.hasOwnProperty.call(settings, 'draft')) return;
+    try{
+      const raw = localStorage.getItem('gongji_daily_draft_' + user);
+      if(raw){ settings.draft = JSON.parse(raw); settings.draftUpdatedAt = Date.now(); }
+    }catch(e){}
+  });
   const s = blob.settings.session;
   if(s && s.expires > Date.now() && blob.accounts[s.user]){
     currentUser = s.user;
+    await restoreFileHandle(currentUser);
+    if(fileConnected) saveLS();
+    applyTheme();
     enterApp();
   }else{
     if(s){ blob.settings.session = null; saveLS(); }

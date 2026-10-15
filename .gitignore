@@ -1,6 +1,19 @@
 # ===== 用户数据（含个人工作记录，切勿提交到仓库）=====
 work_data/
 *.json
+*.json.*
+
+# ===== 私密配置与凭据（仅示例配置可公开）=====
+.env
+.env.*
+!.env.example
+!.env.sample
+private/
+*.local
+*.pem
+*.key
+*.p12
+*.pfx
 
 # ===== 打包产物 / 临时文件 =====
 .trae-html-share-packages/
